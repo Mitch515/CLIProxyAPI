@@ -90,6 +90,34 @@ type AccountSnapshot struct {
 	CreatedAt     time.Time              `json:"created_at,omitempty"`
 	UpdatedAt     time.Time              `json:"updated_at,omitempty"`
 	LastWarmup    *WarmupRecord          `json:"last_warmup,omitempty"`
+
+	// Subscription describes the upstream provider's view of this account's
+	// paid plan. Populated for Codex from the JWT id_token claims; empty for
+	// providers we haven't wired plan-info extraction for yet.
+	Subscription *SubscriptionInfo `json:"subscription,omitempty"`
+}
+
+// SubscriptionInfo captures everything we know about the account's billing
+// state on the upstream provider. All fields are optional so the dashboard
+// can render gracefully even when only some are known.
+type SubscriptionInfo struct {
+	// PlanType is the provider's plan code (e.g. "free", "plus", "pro",
+	// "team", "enterprise"). For Codex/ChatGPT this comes from the JWT
+	// claim `chatgpt_plan_type`.
+	PlanType string `json:"plan_type,omitempty"`
+	// ActiveStart is when the current billing period began.
+	ActiveStart time.Time `json:"active_start,omitempty"`
+	// ActiveUntil is when the current billing period ends. If this is in the
+	// past, the subscription has lapsed even though PlanType may still
+	// reflect the most recent paid tier.
+	ActiveUntil time.Time `json:"active_until,omitempty"`
+	// LastChecked is when the upstream backend last verified the
+	// subscription state (snapshot inside the JWT). Useful for diagnosing
+	// stale data.
+	LastChecked time.Time `json:"last_checked,omitempty"`
+	// Expired is true when ActiveUntil < now. Computed server-side so the
+	// dashboard does not have to deal with timezone math.
+	Expired bool `json:"expired"`
 }
 
 // WarmupRecord describes a single warmup ping result.

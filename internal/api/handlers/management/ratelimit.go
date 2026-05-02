@@ -17,10 +17,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/ratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/ratelimit/service"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/ratelimit/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/ratelimit/warmup"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // RateLimitDeps bundles the optional rate-limit subsystem references the
@@ -464,6 +466,12 @@ func (h *Handler) snapshotFor(c *gin.Context, a store.Account) ratelimit.Account
 			if existing.Disabled {
 				snap.Status = "disabled"
 			}
+			if sub := subscriptionFromAuth(existing); sub != nil {
+				snap.Subscription = sub
+				if sub.Expired {
+					snap.Status = "expired"
+				}
+			}
 		}
 	}
 	if _, ok := snap.Windows[ratelimit.Window5h]; !ok {
@@ -479,6 +487,72 @@ func (h *Handler) snapshotFor(c *gin.Context, a store.Account) ratelimit.Account
 		}
 	}
 	return snap
+}
+
+// subscriptionFromAuth extracts plan + active-window data from the JWT
+// id_token stored on a Codex auth. The id_token is refreshed by the proxy
+// whenever it rotates the access token, so the plan/expiry data here is
+// kept reasonably fresh by the existing auth-refresh loop. Returns nil for
+// non-Codex providers or when the JWT cannot be parsed.
+func subscriptionFromAuth(auth *coreauth.Auth) *ratelimit.SubscriptionInfo {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return nil
+	}
+	idTokenRaw, ok := auth.Metadata["id_token"].(string)
+	if !ok {
+		return nil
+	}
+	idToken := strings.TrimSpace(idTokenRaw)
+	if idToken == "" {
+		return nil
+	}
+	claims, err := codex.ParseJWTToken(idToken)
+	if err != nil || claims == nil {
+		return nil
+	}
+
+	info := &ratelimit.SubscriptionInfo{
+		PlanType:    strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType),
+		LastChecked: claims.CodexAuthInfo.ChatgptSubscriptionLastChecked,
+	}
+	info.ActiveStart = parseJWTTime(claims.CodexAuthInfo.ChatgptSubscriptionActiveStart)
+	info.ActiveUntil = parseJWTTime(claims.CodexAuthInfo.ChatgptSubscriptionActiveUntil)
+	if !info.ActiveUntil.IsZero() && info.ActiveUntil.Before(time.Now().UTC()) {
+		info.Expired = true
+	}
+	return info
+}
+
+// parseJWTTime accepts either an RFC3339 string or a unix-seconds number
+// (the JWT serialization OpenAI uses for these claim values varies between
+// account states; older accounts emit numbers, newer ones emit strings).
+func parseJWTTime(v any) time.Time {
+	switch x := v.(type) {
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return time.Time{}
+		}
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return t.UTC()
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t.UTC()
+		}
+	case float64:
+		if x > 0 {
+			return time.Unix(int64(x), 0).UTC()
+		}
+	case int64:
+		if x > 0 {
+			return time.Unix(x, 0).UTC()
+		}
+	case int:
+		if x > 0 {
+			return time.Unix(int64(x), 0).UTC()
+		}
+	}
+	return time.Time{}
 }
 
 // ----------------------------------------------------------------------------

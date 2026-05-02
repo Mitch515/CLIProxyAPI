@@ -17,18 +17,27 @@ export interface WarmupRecord {
   error?: string;
 }
 
+export interface SubscriptionInfo {
+  plan_type?: string;
+  active_start?: string;
+  active_until?: string;
+  last_checked?: string;
+  expired: boolean;
+}
+
 export interface Account {
   id: string;
   provider: string;
   email?: string;
   label?: string;
-  status: 'active' | 'disabled' | string;
+  status: 'active' | 'disabled' | 'expired' | string;
   warmup_enabled: boolean;
   warmup_model?: string;
   windows: Record<WindowKey, WindowState>;
   created_at?: string;
   updated_at?: string;
   last_warmup?: WarmupRecord | null;
+  subscription?: SubscriptionInfo;
 }
 
 export interface AccountsResponse { accounts: Account[]; }

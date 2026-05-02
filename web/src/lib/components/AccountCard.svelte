@@ -39,6 +39,30 @@
   let warmupArmed = $derived(anyExhausted && account.warmup_enabled);
   let displayName = $derived(account.label || account.email || account.id);
 
+  let sub = $derived(account.subscription ?? null);
+  let isExpired = $derived(Boolean(sub?.expired));
+  let planLabel = $derived.by(() => {
+    if (!sub?.plan_type) return '';
+    if (sub.plan_type === 'free') return 'free';
+    return sub.plan_type;
+  });
+  let untilLabel = $derived.by(() => {
+    if (!sub?.active_until) return '';
+    const d = new Date(sub.active_until);
+    if (Number.isNaN(d.getTime())) return '';
+    const now = Date.now();
+    const diffMs = d.getTime() - now;
+    const days = Math.round(diffMs / (1000 * 60 * 60 * 24));
+    if (isExpired) {
+      const ago = Math.abs(days);
+      if (ago < 60) return `expired ${ago}d ago`;
+      const months = Math.round(ago / 30);
+      return `expired ~${months}mo ago`;
+    }
+    if (days <= 14) return `${days}d left`;
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  });
+
   function remaining(w: WindowState): string {
     if (!w.reset_at) return '';
     const ms = Date.parse(w.reset_at) - tickStore.now;
@@ -59,20 +83,30 @@
   function open() { goto(`${base}/accounts/${encodeURIComponent(account.id)}`); }
 </script>
 
-<button class="card" onclick={open} type="button">
+<button class="card" class:expired-card={isExpired} onclick={open} type="button">
   <header>
     <ProviderLogo provider={account.provider} size={20} />
     <div class="ident">
       <div class="name">{displayName}</div>
       <div class="meta">
         <span class="provider">{account.provider}</span>
+        {#if planLabel}
+          <span class="dot">·</span>
+          <span class="plan" class:expired-plan={isExpired} title={sub?.active_until ? `active_until: ${sub.active_until}` : ''}>{planLabel}</span>
+        {/if}
+        {#if untilLabel}
+          <span class="dot">·</span>
+          <span class="until" class:expired-text={isExpired}>{untilLabel}</span>
+        {/if}
         {#if account.warmup_model}
           <span class="dot">·</span>
           <span class="model" title="Warmup model">{account.warmup_model}</span>
         {/if}
       </div>
     </div>
-    {#if anyExhausted}
+    {#if isExpired}
+      <span class="pill expired-pill" title="Subscription has lapsed">expired</span>
+    {:else if anyExhausted}
       {#if warmupArmed}
         <span class="pill armed" title="Warmup will fire on reset">armed</span>
       {:else}
@@ -134,6 +168,15 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 1px var(--accent), 0 0 18px var(--accent-glow);
   }
+  .card.expired-card {
+    opacity: 0.55;
+    background: var(--bg);
+  }
+  .card.expired-card:hover {
+    opacity: 1;
+    border-color: var(--border-strong);
+    box-shadow: none;
+  }
 
   header {
     display: flex; align-items: center; gap: var(--s-2);
@@ -169,6 +212,16 @@
   .pill.ok { color: var(--ok); border-color: rgba(43,212,164,0.25); }
   .pill.exhausted { color: var(--exhausted); border-color: rgba(255,59,59,0.3); }
   .pill.armed { color: var(--warmup-armed); border-color: rgba(43,212,164,0.4); background: rgba(43,212,164,0.08); }
+  .pill.expired-pill {
+    color: var(--text-muted);
+    border-color: var(--border-strong);
+    background: var(--bg-elev-2);
+    text-decoration: line-through;
+  }
+  .plan { text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; color: var(--accent); }
+  .plan.expired-plan { color: var(--text-dim); text-decoration: line-through; }
+  .until { color: var(--text-muted); }
+  .until.expired-text { color: var(--hot); }
 
   .windows { display: flex; flex-direction: column; gap: 6px; }
   .row {
