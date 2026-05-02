@@ -79,10 +79,10 @@
 
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: var(--s-5);
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--s-3);
   }
-  .skel { height: 220px; }
+  .skel { height: 140px; }
 
   .empty {
     background: var(--bg-elev-1);

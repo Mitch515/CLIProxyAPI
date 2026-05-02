@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,10 +92,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			reset_at_7d    INTEGER,
 			last_seen_at   INTEGER NOT NULL,
 			created_at     INTEGER NOT NULL,
-			updated_at     INTEGER NOT NULL
+			updated_at     INTEGER NOT NULL,
+			hidden         INTEGER NOT NULL DEFAULT 0
 		)`,
+		// Idempotent ALTER for existing DBs (modernc/sqlite returns "duplicate column"
+		// safely; we ignore the error in migrate by issuing it as a separate transaction).
 		`CREATE INDEX IF NOT EXISTS idx_accounts_provider ON accounts(provider)`,
 		`CREATE INDEX IF NOT EXISTS idx_accounts_warmup ON accounts(warmup_enabled, exhausted_5h, exhausted_7d, reset_at_5h, reset_at_7d)`,
+		`CREATE INDEX IF NOT EXISTS idx_accounts_hidden ON accounts(hidden)`,
 
 		`CREATE TABLE IF NOT EXISTS rate_observations (
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,10 +128,30 @@ func (s *Store) migrate(ctx context.Context) error {
 
 		`INSERT OR IGNORE INTO schema_meta(k,v) VALUES('version','1')`,
 	}
+	// Run CREATE TABLE / CREATE INDEX statements in order. We split the
+	// hidden-column index from the others because pre-existing databases
+	// need an additive ALTER before the index can be created.
 	for _, q := range stmts {
+		// Defer the hidden index until after the ALTER below.
+		if strings.Contains(q, "idx_accounts_hidden") {
+			continue
+		}
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			return fmt.Errorf("ratelimit store: migrate %q: %w", firstWords(q, 6), err)
 		}
+	}
+	// Additive migration: add the hidden column to old tables. CREATE TABLE
+	// IF NOT EXISTS above is a no-op when the table already exists with an
+	// older schema, so this ALTER is the only path that makes the column
+	// appear on upgraded installs. SQLite returns "duplicate column" on
+	// fresh tables — that's fine, we ignore it.
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE accounts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		log.Debugf("ratelimit store: hidden column ALTER: %v", err)
+	}
+	// Now safe to index.
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_accounts_hidden ON accounts(hidden)`); err != nil {
+		return fmt.Errorf("ratelimit store: migrate hidden index: %w", err)
 	}
 	return nil
 }
@@ -242,13 +267,58 @@ func (s *Store) GetAccount(ctx context.Context, authID string) (Account, error) 
 	return scanAccount(row)
 }
 
-// ListAccounts returns every row.
+// ListAccounts returns every visible row (hidden=0). Use ListAllAccounts
+// for the unfiltered view.
 func (s *Store) ListAccounts(ctx context.Context) ([]Account, error) {
-	const q = `SELECT auth_id, provider, IFNULL(email,''), IFNULL(label,''),
+	return s.listAccountsWhere(ctx, "WHERE hidden = 0")
+}
+
+// ListAllAccounts returns every row including hidden ones. Used by the
+// reconciler so it knows which auth_ids are already known (and should not
+// be revived on the next reconcile pass).
+func (s *Store) ListAllAccounts(ctx context.Context) ([]Account, error) {
+	return s.listAccountsWhere(ctx, "")
+}
+
+// IsHidden reports whether the given account is currently hidden.
+func (s *Store) IsHidden(ctx context.Context, authID string) (bool, error) {
+	var v int
+	err := s.db.QueryRowContext(ctx, `SELECT hidden FROM accounts WHERE auth_id = ?`, authID).Scan(&v)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return v != 0, nil
+}
+
+// SetHidden flips the hidden flag for one account.
+func (s *Store) SetHidden(ctx context.Context, authID string, hidden bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE accounts SET hidden = ?, updated_at = ? WHERE auth_id = ?`,
+		boolToInt(hidden), time.Now().UTC().Unix(), authID)
+	return err
+}
+
+// EnsureHiddenRow makes sure there's a row to mark hidden even if the auth
+// has been removed from coreManager (e.g. virtual sub-account that came back).
+// Idempotent.
+func (s *Store) EnsureHiddenRow(ctx context.Context, authID, provider string) error {
+	now := time.Now().UTC().Unix()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO accounts (auth_id, provider, warmup_enabled, last_seen_at, created_at, updated_at, hidden)
+		VALUES (?, ?, 0, ?, ?, ?, 1)
+		ON CONFLICT(auth_id) DO UPDATE SET hidden = 1, updated_at = excluded.updated_at`,
+		authID, provider, now, now, now)
+	return err
+}
+
+func (s *Store) listAccountsWhere(ctx context.Context, where string) ([]Account, error) {
+	q := `SELECT auth_id, provider, IFNULL(email,''), IFNULL(label,''),
 		warmup_enabled, IFNULL(warmup_model,''),
 		exhausted_5h, exhausted_7d, IFNULL(reset_at_5h,0), IFNULL(reset_at_7d,0),
 		last_seen_at, created_at, updated_at
-		FROM accounts ORDER BY provider ASC, label ASC, auth_id ASC`
+		FROM accounts ` + where + ` ORDER BY provider ASC, label ASC, auth_id ASC`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, err

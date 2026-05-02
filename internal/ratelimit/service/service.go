@@ -204,15 +204,30 @@ func (s *Service) reconcileOnce(ctx context.Context) {
 	if s.coreManager == nil {
 		return
 	}
-	// Build the live set of non-disabled auths and upsert each one.
+	// Snapshot of currently-hidden auth_ids so we never resurrect them. The
+	// dashboard's DELETE button flips hidden=true; auto-discovered virtual
+	// sub-accounts (e.g. gemini-cli per-project entries) come back through
+	// SynthesizeGeminiVirtualAuths on every restart/file-change, so without
+	// this filter the user could never make them stay gone.
+	hidden := make(map[string]struct{})
+	if rows, err := s.store.ListAllAccounts(ctx); err == nil {
+		for _, r := range rows {
+			if h, _ := s.store.IsHidden(ctx, r.AuthID); h {
+				hidden[r.AuthID] = struct{}{}
+			}
+		}
+	}
+
+	// Build the live set of non-disabled, non-hidden auths and upsert each.
 	live := make(map[string]struct{})
 	for _, a := range s.coreManager.List() {
 		if a == nil || a.ID == "" {
 			continue
 		}
-		// Skip disabled auths entirely so deleted-on-disk credentials drop
-		// out of the dashboard rather than lingering as zombie rows.
 		if a.Disabled {
+			continue
+		}
+		if _, isHidden := hidden[a.ID]; isHidden {
 			continue
 		}
 		live[a.ID] = struct{}{}
@@ -230,19 +245,18 @@ func (s *Service) reconcileOnce(ctx context.Context) {
 		}
 	}
 
-	// Drop any rows whose auth_id is no longer present (or is disabled).
-	// One simple approach: read all rows, diff against live set, delete the
-	// extras. SQLite handles small tables this way fine; with thousands of
-	// accounts we'd switch to a temp table join.
-	existing, err := s.store.ListAccounts(ctx)
+	// Drop any visible rows whose auth_id is no longer present in coreManager
+	// AND is not hidden. Hidden rows persist so the user's deletion sticks
+	// across the next virtual-auth resurrection.
+	visible, err := s.store.ListAccounts(ctx)
 	if err != nil {
 		return
 	}
-	for _, row := range existing {
+	for _, row := range visible {
 		if _, ok := live[row.AuthID]; ok {
 			continue
 		}
-		if _, err := s.store.DB().ExecContext(ctx, `DELETE FROM accounts WHERE auth_id = ?`, row.AuthID); err != nil {
+		if _, err := s.store.DB().ExecContext(ctx, `DELETE FROM accounts WHERE auth_id = ? AND hidden = 0`, row.AuthID); err != nil {
 			log.Debugf("ratelimit service: reconcile delete %s: %v", row.AuthID, err)
 		}
 	}

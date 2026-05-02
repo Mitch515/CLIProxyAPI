@@ -30,6 +30,19 @@ import (
 // We extract any "X hours Y minutes" / "X minutes Y seconds" duration phrase
 // and mark the 5h window exhausted with reset_at = now + that duration.
 func parseOpenAI(status int, headers http.Header, body []byte) []ratelimit.Observation {
+	// Prefer the Codex-specific x-codex-primary-*/x-codex-secondary-* headers
+	// when they are present (ChatGPT-backed Codex via chatgpt.com). They
+	// describe the real 5h/7d windows and supersede any x-ratelimit-*
+	// values the upstream may also set.
+	if codexObs := parseCodexHeaders(headers); len(codexObs) > 0 {
+		if status == http.StatusTooManyRequests {
+			for i := range codexObs {
+				codexObs[i].Exhausted = true
+			}
+		}
+		return codexObs
+	}
+
 	out := readOpenAIHeaders(headers)
 	if status == http.StatusTooManyRequests {
 		if obs, ok := parseOpenAI429Body(body); ok {

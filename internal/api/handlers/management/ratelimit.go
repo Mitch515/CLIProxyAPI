@@ -289,9 +289,11 @@ func isTokenExpiredError(s string) bool {
 		strings.Contains(low, "refresh token is expired")
 }
 
-// DeleteAccount removes the auth file from disk so the proxy stops trying to
-// use this credential. Useful for cleaning up accounts whose refresh tokens
-// have expired and that the user does not intend to re-OAuth.
+// DeleteAccount hides the account from the dashboard. If a real auth file
+// backs the account it is also removed from disk; virtual sub-accounts (e.g.
+// gemini-cli per-project entries that the watcher synthesizes on every start)
+// just get hidden=true so they stop coming back. The user can re-show
+// hidden accounts via the (TODO) "show hidden" toggle.
 //
 //	DELETE /v0/management/accounts/:id
 func (h *Handler) DeleteAccount(c *gin.Context) {
@@ -300,36 +302,46 @@ func (h *Handler) DeleteAccount(c *gin.Context) {
 		return
 	}
 	id := c.Param("id")
-	// auth file IDs are filenames under auth-dir; reject any path-y input.
-	if id == "" || strings.ContainsAny(id, `/\\`) || strings.Contains(id, "..") {
+	if id == "" || strings.Contains(id, "..") {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
+
+	// Real-file account IDs match a single filename under auth-dir. Virtual
+	// IDs contain "::" (e.g. "<file>.json::<project-id>"). Slashes/backslashes
+	// would also be path traversal — reject them for filename actions but
+	// still allow virtual IDs to be hidden.
+	provider := ""
 	authDir := expandHome(h.cfg.AuthDir)
-	path := filepath.Join(authDir, id)
-	if err := os.Remove(path); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+	isFilename := !strings.Contains(id, "::") && !strings.ContainsAny(id, `/\\`)
+	if isFilename {
+		path := filepath.Join(authDir, id)
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
 	}
-	// Drop the dashboard row immediately so the SPA reflects the change.
+
 	if h.rl.Store != nil {
-		_, _ = h.rl.Store.DB().ExecContext(c.Request.Context(), `DELETE FROM accounts WHERE auth_id = ?`, id)
+		// Look up provider before we hide the row so EnsureHiddenRow has a
+		// useful value when no row exists yet.
+		if existing, err := h.rl.Store.GetAccount(c.Request.Context(), id); err == nil {
+			provider = existing.Provider
+		}
+		if err := h.rl.Store.EnsureHiddenRow(c.Request.Context(), id, provider); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
-	// Give the file watcher ~250ms to mark the auth as disabled in
-	// coreManager, then run a reconcile pass. This makes the deletion
-	// idempotent: even if the watcher misses the event, the next periodic
-	// reconcile will catch up — but the dashboard does not have to wait.
+
+	// Run reconcile after the file watcher has had a moment to react.
 	if h.rl.Service != nil {
 		go func() {
 			time.Sleep(250 * time.Millisecond)
 			h.rl.Service.ReconcileNow(context.Background())
 		}()
 	}
-	c.JSON(http.StatusOK, gin.H{"deleted": true})
+	c.JSON(http.StatusOK, gin.H{"deleted": true, "hidden": true, "removed_file": isFilename})
 }
 
 // expandHome resolves a leading ~ in an auth-dir path.
