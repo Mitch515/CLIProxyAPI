@@ -63,3 +63,4 @@ internal/web/dist/*
 
 # Local dev / smoke artifacts
 smoke-*
+dev-config.yaml

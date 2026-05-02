@@ -204,10 +204,18 @@ func (s *Service) reconcileOnce(ctx context.Context) {
 	if s.coreManager == nil {
 		return
 	}
+	// Build the live set of non-disabled auths and upsert each one.
+	live := make(map[string]struct{})
 	for _, a := range s.coreManager.List() {
 		if a == nil || a.ID == "" {
 			continue
 		}
+		// Skip disabled auths entirely so deleted-on-disk credentials drop
+		// out of the dashboard rather than lingering as zombie rows.
+		if a.Disabled {
+			continue
+		}
+		live[a.ID] = struct{}{}
 		_, email := a.AccountInfo()
 		acc := store.Account{
 			AuthID:        a.ID,
@@ -221,6 +229,30 @@ func (s *Service) reconcileOnce(ctx context.Context) {
 			log.Debugf("ratelimit service: reconcile upsert: %v", err)
 		}
 	}
+
+	// Drop any rows whose auth_id is no longer present (or is disabled).
+	// One simple approach: read all rows, diff against live set, delete the
+	// extras. SQLite handles small tables this way fine; with thousands of
+	// accounts we'd switch to a temp table join.
+	existing, err := s.store.ListAccounts(ctx)
+	if err != nil {
+		return
+	}
+	for _, row := range existing {
+		if _, ok := live[row.AuthID]; ok {
+			continue
+		}
+		if _, err := s.store.DB().ExecContext(ctx, `DELETE FROM accounts WHERE auth_id = ?`, row.AuthID); err != nil {
+			log.Debugf("ratelimit service: reconcile delete %s: %v", row.AuthID, err)
+		}
+	}
+}
+
+// ReconcileNow runs one synchronous reconcile pass. Used by the management
+// DELETE handler after removing an auth file so the dashboard does not show
+// the row for up to one ticker interval after the user deletes the account.
+func (s *Service) ReconcileNow(ctx context.Context) {
+	s.reconcileOnce(ctx)
 }
 
 // Subscribe registers a new SSE listener. The returned cancel function must

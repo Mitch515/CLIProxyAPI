@@ -538,10 +538,15 @@ func (s *Server) registerManagementRoutes() {
 
 		// Dashboard rate-limit endpoints. Routes 503 when ratelimit subsystem is disabled.
 		mgmt.GET("/accounts", s.mgmt.ListAccounts)
+		// "warmup-all" is registered before /accounts/:id so gin's trie matches
+		// the literal segment ahead of the param.
+		mgmt.POST("/accounts/warmup-all", s.mgmt.PostWarmupAll)
 		mgmt.GET("/accounts/:id", s.mgmt.GetAccount)
 		mgmt.PATCH("/accounts/:id", s.mgmt.PatchAccount)
+		mgmt.DELETE("/accounts/:id", s.mgmt.DeleteAccount)
 		mgmt.GET("/accounts/:id/history", s.mgmt.GetAccountHistory)
 		mgmt.POST("/accounts/:id/warmup", s.mgmt.PostAccountWarmup)
+		mgmt.POST("/accounts/:id/auto-detect", s.mgmt.PostAccountAutoDetect)
 		mgmt.POST("/sse-ticket", s.mgmt.PostSSETicket)
 
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)

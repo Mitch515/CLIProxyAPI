@@ -1,11 +1,16 @@
 package management
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,6 +180,168 @@ func (h *Handler) PostAccountWarmup(c *gin.Context) {
 	}
 	rec, _ := h.rl.Store.LastWarmup(c.Request.Context(), id)
 	c.JSON(http.StatusOK, gin.H{"fired": true, "last": rec})
+}
+
+// PostWarmupAll fires a warmup against every known account (any provider). The
+// response is the per-account result of the run. Useful as a "ping every
+// subscription" smoke button on the dashboard. Runs sequentially with a
+// 30-second per-call timeout the scheduler already applies.
+//
+//	POST /v0/management/accounts/warmup-all
+func (h *Handler) PostWarmupAll(c *gin.Context) {
+	if h.rl.Scheduler == nil || h.rl.Store == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "warmup subsystem disabled"})
+		return
+	}
+	accs, err := h.rl.Store.ListAccounts(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	type result struct {
+		ID    string                  `json:"id"`
+		OK    bool                    `json:"ok"`
+		Last  *ratelimit.WarmupRecord `json:"last,omitempty"`
+		Error string                  `json:"error,omitempty"`
+	}
+	out := make([]result, 0, len(accs))
+	for _, a := range accs {
+		if err := h.rl.Scheduler.FireOnce(c.Request.Context(), a.AuthID, true); err != nil {
+			out = append(out, result{ID: a.AuthID, OK: false, Error: err.Error()})
+			continue
+		}
+		rec, _ := h.rl.Store.LastWarmup(c.Request.Context(), a.AuthID)
+		ok := rec != nil && rec.OK
+		out = append(out, result{ID: a.AuthID, OK: ok, Last: rec})
+	}
+	c.JSON(http.StatusOK, gin.H{"results": out})
+}
+
+// PostAccountAutoDetect probes a list of candidate models against one
+// account, sets warmup_model to the first model that succeeds, and returns
+// the per-attempt log. The detection result is not persisted in
+// rate_observations; only the chosen model is saved on the account.
+//
+//	POST /v0/management/accounts/:id/auto-detect
+func (h *Handler) PostAccountAutoDetect(c *gin.Context) {
+	if h.rl.Scheduler == nil || h.rl.Store == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "warmup subsystem disabled"})
+		return
+	}
+	id := c.Param("id")
+	acc, err := h.rl.Store.GetAccount(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+		return
+	}
+	candidates := warmup.CandidateModels(acc.Provider)
+	if len(candidates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no candidate models for provider " + acc.Provider})
+		return
+	}
+
+	type attempt struct {
+		Model string `json:"model"`
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	attempts := make([]attempt, 0, len(candidates))
+	winner := ""
+	tokenExpired := false
+
+	for _, model := range candidates {
+		// Set this model as the warmup_model and fire one ping.
+		_, _ = h.rl.Store.Patch(c.Request.Context(), id, store.AccountPatch{WarmupModel: &model})
+		_ = h.rl.Scheduler.FireOnce(c.Request.Context(), id, true)
+		rec, _ := h.rl.Store.LastWarmup(c.Request.Context(), id)
+		if rec == nil {
+			attempts = append(attempts, attempt{Model: model, OK: false, Error: "no warmup record"})
+			continue
+		}
+		attempts = append(attempts, attempt{Model: model, OK: rec.OK, Error: rec.Error})
+		if rec.OK {
+			winner = model
+			break
+		}
+		if isTokenExpiredError(rec.Error) {
+			tokenExpired = true
+			break
+		}
+	}
+
+	// If nothing worked, restore the original warmup_model.
+	if winner == "" {
+		original := acc.WarmupModel
+		_, _ = h.rl.Store.Patch(c.Request.Context(), id, store.AccountPatch{WarmupModel: &original})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"winner":        winner,
+		"token_expired": tokenExpired,
+		"attempts":      attempts,
+	})
+}
+
+func isTokenExpiredError(s string) bool {
+	low := strings.ToLower(s)
+	return strings.Contains(low, "token_expired") ||
+		strings.Contains(low, "authentication token is expired") ||
+		strings.Contains(low, "refresh token is expired")
+}
+
+// DeleteAccount removes the auth file from disk so the proxy stops trying to
+// use this credential. Useful for cleaning up accounts whose refresh tokens
+// have expired and that the user does not intend to re-OAuth.
+//
+//	DELETE /v0/management/accounts/:id
+func (h *Handler) DeleteAccount(c *gin.Context) {
+	if h.cfg == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "config unavailable"})
+		return
+	}
+	id := c.Param("id")
+	// auth file IDs are filenames under auth-dir; reject any path-y input.
+	if id == "" || strings.ContainsAny(id, `/\\`) || strings.Contains(id, "..") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	authDir := expandHome(h.cfg.AuthDir)
+	path := filepath.Join(authDir, id)
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// Drop the dashboard row immediately so the SPA reflects the change.
+	if h.rl.Store != nil {
+		_, _ = h.rl.Store.DB().ExecContext(c.Request.Context(), `DELETE FROM accounts WHERE auth_id = ?`, id)
+	}
+	// Give the file watcher ~250ms to mark the auth as disabled in
+	// coreManager, then run a reconcile pass. This makes the deletion
+	// idempotent: even if the watcher misses the event, the next periodic
+	// reconcile will catch up — but the dashboard does not have to wait.
+	if h.rl.Service != nil {
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			h.rl.Service.ReconcileNow(context.Background())
+		}()
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
+// expandHome resolves a leading ~ in an auth-dir path.
+func expandHome(p string) string {
+	if !strings.HasPrefix(p, "~") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return filepath.Join(home, strings.TrimPrefix(p, "~"))
 }
 
 // ============================================================================

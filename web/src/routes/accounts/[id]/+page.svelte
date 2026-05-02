@@ -18,6 +18,9 @@
     if (id) accountsStore.refreshOne(id);
   });
 
+  let detecting = $state(false);
+  let deleting = $state(false);
+
   async function fireWarmup() {
     if (!id) return;
     try {
@@ -47,6 +50,39 @@
       toastStore.push({ kind: 'error', title: 'Could not rename', body: e?.message });
     }
   }
+
+  async function autoDetect() {
+    if (!id || detecting) return;
+    detecting = true;
+    try {
+      const result = await accountsStore.autoDetect(id);
+      if (result.winner) {
+        toastStore.push({ kind: 'success', title: `Auto-detected ${result.winner}`, body: `${result.attempts.length} attempts` });
+      } else if (result.token_expired) {
+        toastStore.push({ kind: 'error', title: 'Token expired', body: 'Re-OAuth this account or delete it' });
+      } else {
+        toastStore.push({ kind: 'error', title: 'No working model found', body: `${result.attempts.length} models tried` });
+      }
+    } catch (e: any) {
+      toastStore.push({ kind: 'error', title: 'Auto-detect failed', body: e?.message });
+    } finally {
+      detecting = false;
+    }
+  }
+
+  async function removeAccount() {
+    if (!account || !id) return;
+    if (!confirm(`Delete ${account.label || account.email || id}?\n\nThis removes the auth file from disk. Re-login required to bring it back.`)) return;
+    deleting = true;
+    try {
+      await accountsStore.remove(id);
+      toastStore.push({ kind: 'success', title: 'Account deleted' });
+      goto(base || '/');
+    } catch (e: any) {
+      toastStore.push({ kind: 'error', title: 'Delete failed', body: e?.message });
+      deleting = false;
+    }
+  }
 </script>
 
 <a class="back" href={base || '/'}>← all subscriptions</a>
@@ -63,6 +99,8 @@
     <div class="actions">
       <button onclick={renameLabel}>rename</button>
       <button onclick={toggleWarmup}>{account.warmup_enabled ? 'disable warmup' : 'enable warmup'}</button>
+      <button onclick={autoDetect} disabled={detecting}>{detecting ? 'detecting…' : 'auto-detect model'}</button>
+      <button class="danger" onclick={removeAccount} disabled={deleting}>{deleting ? 'deleting…' : 'delete'}</button>
       <button class="primary" onclick={fireWarmup}>fire warmup ping</button>
     </div>
   </header>
@@ -133,4 +171,12 @@
   }
   .err { color: var(--hot); font-family: var(--font-mono); font-size: var(--fs-12); white-space: pre-wrap; }
   .muted { color: var(--text-muted); }
+  .actions button.danger {
+    color: var(--hot);
+    border-color: rgba(255, 107, 107, 0.4);
+  }
+  .actions button.danger:hover {
+    background: rgba(255, 107, 107, 0.1);
+    border-color: var(--hot);
+  }
 </style>

@@ -110,6 +110,12 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.SetBytes(body, "stream", true)
+	// Codex over ChatGPT subscriptions rejects the Responses API "store"
+	// field unless explicitly false. The OpenAI-Responses → Codex translator
+	// already injects this, but codex-format requests (e.g. dashboard
+	// warmup pings) skip the translator entirely. Force it here so every
+	// outgoing request is correct regardless of the source format.
+	body, _ = sjson.SetBytes(body, "store", false)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")

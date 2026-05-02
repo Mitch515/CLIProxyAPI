@@ -64,6 +64,23 @@ class AccountsStore {
     await accountsApi.warmup(id);
     await this.refreshOne(id);
   }
+
+  async fireWarmupAll() {
+    return await accountsApi.warmupAll();
+  }
+
+  async autoDetect(id: string) {
+    const result = await accountsApi.autoDetect(id);
+    await this.refreshOne(id);
+    return result;
+  }
+
+  async remove(id: string) {
+    await accountsApi.delete(id);
+    const next = new Map(this.byId);
+    next.delete(id);
+    this.byId = next;
+  }
 }
 
 export const accountsStore = new AccountsStore();

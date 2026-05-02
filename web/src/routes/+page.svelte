@@ -1,7 +1,30 @@
 <script lang="ts">
   import { accountsStore } from '$lib/stores/accounts.svelte';
+  import { toastStore } from '$lib/stores/toasts.svelte';
   import AccountCard from '$lib/components/AccountCard.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
+
+  let pinging = $state(false);
+
+  async function pingAll() {
+    if (pinging) return;
+    pinging = true;
+    try {
+      const res = await accountsStore.fireWarmupAll();
+      const ok = res.results.filter(r => r.ok).length;
+      const total = res.results.length;
+      toastStore.push({
+        kind: ok > 0 ? 'success' : 'error',
+        title: `Pinged ${total} accounts`,
+        body: `${ok} succeeded · ${total - ok} failed`
+      });
+      await accountsStore.refresh();
+    } catch (e: any) {
+      toastStore.push({ kind: 'error', title: 'Ping all failed', body: e?.message ?? String(e) });
+    } finally {
+      pinging = false;
+    }
+  }
 </script>
 
 <div class="header">
@@ -9,7 +32,12 @@
     <h1>Subscriptions</h1>
     <p class="sub">{accountsStore.list.length} connected · live updates via SSE</p>
   </div>
-  <button onclick={() => accountsStore.refresh()}>refresh</button>
+  <div class="actions">
+    <button onclick={() => accountsStore.refresh()}>refresh</button>
+    <button class="primary" disabled={pinging || accountsStore.list.length === 0} onclick={pingAll}>
+      {pinging ? 'pinging…' : 'ping all'}
+    </button>
+  </div>
 </div>
 
 {#if accountsStore.loading && accountsStore.list.length === 0}
@@ -45,6 +73,7 @@
     display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s-4);
     margin-bottom: var(--s-6);
   }
+  .actions { display: flex; gap: var(--s-2); }
   h1 { margin: 0; font-size: var(--fs-32); font-weight: 700; letter-spacing: -0.01em; }
   .sub { margin: var(--s-1) 0 0; color: var(--text-muted); font-size: var(--fs-13); }
 

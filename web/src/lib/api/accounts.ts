@@ -20,5 +20,15 @@ export const accountsApi = {
   },
   warmup: (id: string) =>
     api.post<{ fired: boolean; last: any }>(`/v0/management/accounts/${encodeURIComponent(id)}/warmup`),
+  warmupAll: () =>
+    api.post<{ results: Array<{ id: string; ok: boolean; last?: any; error?: string }> }>(
+      '/v0/management/accounts/warmup-all'
+    ),
+  autoDetect: (id: string) =>
+    api.post<{ winner: string; token_expired: boolean; attempts: Array<{ model: string; ok: boolean; error?: string }> }>(
+      `/v0/management/accounts/${encodeURIComponent(id)}/auto-detect`
+    ),
+  delete: (id: string) =>
+    api.del<{ deleted: boolean }>(`/v0/management/accounts/${encodeURIComponent(id)}`),
   sseTicket: () => api.post<SSETicketResponse>('/v0/management/sse-ticket')
 };
