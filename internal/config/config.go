@@ -118,7 +118,47 @@ type Config struct {
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
+	// RateLimit configures the dashboard rate-limit subsystem (per-account
+	// 5h/7d window tracking, persistence, auto-warmup).
+	RateLimit RateLimitConfig `yaml:"rate-limit" json:"rate-limit"`
+
 	legacyMigrationPending bool `yaml:"-" json:"-"`
+}
+
+// RateLimitConfig configures the dashboard subsystem that tracks per-account
+// 5-hour and 7-day usage windows and (optionally) fires a warmup ping when
+// they reset. Zero-value config produces sensible defaults: enabled,
+// warmup enabled, 30s tick, 14 days of history.
+type RateLimitConfig struct {
+	// Enabled toggles the entire dashboard subsystem. Default true.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// WarmupEnabled toggles the auto-warmup scheduler. Default true.
+	WarmupEnabled *bool `yaml:"warmup-enabled,omitempty" json:"warmup-enabled,omitempty"`
+	// PollIntervalSeconds controls how often the warmup scheduler scans for
+	// due accounts. Default 30. Minimum 5.
+	PollIntervalSeconds int `yaml:"poll-interval-seconds,omitempty" json:"poll-interval-seconds,omitempty"`
+	// HistoryDays caps how long observation rows are retained. Default 14.
+	HistoryDays int `yaml:"history-days,omitempty" json:"history-days,omitempty"`
+	// WarmupModels is an optional per-provider override of the cheapest model
+	// the scheduler pings. Keys are lowercased provider names. When unset the
+	// warmup package's DefaultModels map is used.
+	WarmupModels map[string]string `yaml:"warmup-models,omitempty" json:"warmup-models,omitempty"`
+}
+
+// IsEnabled returns true when the subsystem should run. Defaults to true.
+func (c RateLimitConfig) IsEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+// IsWarmupEnabled returns true when the warmup scheduler should run. Defaults to true.
+func (c RateLimitConfig) IsWarmupEnabled() bool {
+	if c.WarmupEnabled == nil {
+		return true
+	}
+	return *c.WarmupEnabled
 }
 
 // ClaudeHeaderDefaults configures default header values injected into Claude API requests

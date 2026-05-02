@@ -48,6 +48,33 @@ pprof:
 # When true, disable high-overhead HTTP middleware features to reduce per-request memory usage under high concurrency.
 commercial-mode: false
 
+# Dashboard rate-limit subsystem. Tracks per-account 5h / 7d usage windows
+# parsed from upstream rate-limit headers and 429 bodies, persists them in a
+# SQLite file under auth-dir, and (optionally) fires a one-token warmup ping
+# the moment a previously exhausted window resets so the next window starts
+# at the earliest possible second.
+#
+# Powers the embedded SvelteKit dashboard at /dashboard and these endpoints:
+#   GET    /v0/management/accounts
+#   GET    /v0/management/accounts/:id
+#   GET    /v0/management/accounts/:id/history?window=5h|7d
+#   PATCH  /v0/management/accounts/:id
+#   POST   /v0/management/accounts/:id/warmup
+#   POST   /v0/management/sse-ticket
+#   GET    /v0/management/events?ticket=…   (Server-Sent Events)
+#
+# Defaults are: enabled=true, warmup-enabled=true, poll-interval-seconds=30,
+# history-days=14. Omit the block entirely to accept all defaults.
+rate-limit:
+  enabled: true
+  warmup-enabled: true
+  poll-interval-seconds: 30
+  history-days: 14
+  # Per-provider override of the cheapest model the warmup scheduler pings.
+  # Keys are lowercased provider names. When unset the built-in defaults apply
+  # (Claude Haiku, gpt-5-nano, gemini-2.5-flash-lite, …).
+  warmup-models: {}
+
 # When true, write application logs to rotating files instead of stdout
 logging-to-file: false
 

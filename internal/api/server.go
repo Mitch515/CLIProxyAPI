@@ -28,6 +28,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/web"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
@@ -425,6 +426,29 @@ func (s *Server) setupRoutes() {
 	})
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
+
+	// SSE route for the dashboard. Authenticated via short-lived ticket
+	// (minted by the protected POST /v0/management/sse-ticket) so the
+	// browser EventSource — which cannot send custom headers — never
+	// transmits the bearer token in the URL.
+	s.engine.GET("/v0/management/events", s.mgmt.RateLimitEventsSSE)
+
+	// Embedded SvelteKit dashboard at /dashboard/*. The static assets are
+	// safe to serve without auth; the JS calls /v0/management/* with the
+	// bearer token from localStorage.
+	if err := web.Mount(s.engine); err != nil {
+		log.Errorf("failed to mount dashboard SPA: %v", err)
+	}
+}
+
+// SetRateLimitDeps wires the dashboard rate-limit subsystem references into
+// the management handler. Safe to call after NewServer; safe to pass a
+// zero-valued struct when the subsystem is disabled.
+func (s *Server) SetRateLimitDeps(deps managementHandlers.RateLimitDeps) {
+	if s == nil || s.mgmt == nil {
+		return
+	}
+	s.mgmt.SetRateLimitDeps(deps)
 }
 
 // AttachWebsocketRoute registers a websocket upgrade handler on the primary Gin engine.
@@ -511,6 +535,14 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
+
+		// Dashboard rate-limit endpoints. Routes 503 when ratelimit subsystem is disabled.
+		mgmt.GET("/accounts", s.mgmt.ListAccounts)
+		mgmt.GET("/accounts/:id", s.mgmt.GetAccount)
+		mgmt.PATCH("/accounts/:id", s.mgmt.PatchAccount)
+		mgmt.GET("/accounts/:id/history", s.mgmt.GetAccountHistory)
+		mgmt.POST("/accounts/:id/warmup", s.mgmt.PostAccountWarmup)
+		mgmt.POST("/sse-ticket", s.mgmt.PostSSETicket)
 
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)

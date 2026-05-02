@@ -48,3 +48,18 @@ _bmad-output/*
 # macOS
 .DS_Store
 ._*
+
+# Dashboard build artifacts (frontend toolchain output; kept out of git so the
+# JS toolchain isn't required for backend-only contributors). Only the
+# placeholder index.html is tracked so that //go:embed all:dist resolves on
+# a fresh checkout; running scripts/build-web.{sh,ps1} overwrites it with
+# the real bundle.
+web/node_modules/
+web/.svelte-kit/
+web/build/
+web/.vite/
+internal/web/dist/*
+!internal/web/dist/index.html
+
+# Local dev / smoke artifacts
+smoke-*

@@ -66,6 +66,11 @@ type Auth struct {
 }
 
 // QuotaState contains limiter tracking data for a credential.
+//
+// The Window5h*/Window7d* fields are populated by the rate-limit subsystem
+// (see internal/ratelimit) from upstream rate-limit headers and 429 bodies.
+// They are advisory: the selector will skip an auth whose window is fully
+// consumed and not yet reset, but absence of data leaves selection unchanged.
 type QuotaState struct {
 	// Exceeded indicates the credential recently hit a quota error.
 	Exceeded bool `json:"exceeded"`
@@ -75,6 +80,15 @@ type QuotaState struct {
 	NextRecoverAt time.Time `json:"next_recover_at"`
 	// BackoffLevel stores the progressive cooldown exponent used for rate limits.
 	BackoffLevel int `json:"backoff_level,omitempty"`
+
+	// Window5hPct is the fraction of the 5-hour rolling window consumed in [0, 1].
+	Window5hPct float64 `json:"window_5h_pct,omitempty"`
+	// Window5hResetAt is when the 5-hour window will reset (zero if unknown).
+	Window5hResetAt time.Time `json:"window_5h_reset_at,omitempty"`
+	// Window7dPct is the fraction of the 7-day rolling window consumed in [0, 1].
+	Window7dPct float64 `json:"window_7d_pct,omitempty"`
+	// Window7dResetAt is when the 7-day window will reset (zero if unknown).
+	Window7dResetAt time.Time `json:"window_7d_reset_at,omitempty"`
 }
 
 // ModelState captures the execution state for a specific model under an auth entry.

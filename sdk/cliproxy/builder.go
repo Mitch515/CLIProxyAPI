@@ -4,15 +4,21 @@
 package cliproxy
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	rlservice "github.com/router-for-me/CLIProxyAPI/v6/internal/ratelimit/service"
+	rlstore "github.com/router-for-me/CLIProxyAPI/v6/internal/ratelimit/store"
+	rlwarmup "github.com/router-for-me/CLIProxyAPI/v6/internal/ratelimit/warmup"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 // Builder constructs a Service instance with customizable providers.
@@ -227,6 +233,28 @@ func (b *Builder) Build() (*Service, error) {
 		accessManager:  accessManager,
 		coreManager:    coreManager,
 		serverOptions:  append([]api.ServerOption(nil), b.serverOptions...),
+	}
+
+	// Optional rate-limit / warmup subsystem. Failure to open the store is
+	// not fatal — the proxy keeps running, just without dashboard metrics.
+	if b.cfg.RateLimit.IsEnabled() {
+		st, errOpen := rlstore.Open(context.Background(), b.cfg.AuthDir)
+		if errOpen != nil {
+			log.Warnf("ratelimit: store open failed, dashboard subsystem disabled: %v", errOpen)
+		} else {
+			svc := rlservice.New(st, coreManager)
+			pollSec := b.cfg.RateLimit.PollIntervalSeconds
+			if pollSec < 5 {
+				pollSec = 30
+			}
+			sched := rlwarmup.New(st, coreManager, svc, rlwarmup.Options{
+				TickInterval: time.Duration(pollSec) * time.Second,
+				Enabled:      b.cfg.RateLimit.IsWarmupEnabled(),
+			})
+			service.rlStore = st
+			service.rlService = svc
+			service.rlScheduler = sched
+		}
 	}
 	return service, nil
 }

@@ -47,6 +47,9 @@ type Handler struct {
 	allowRemoteOverride bool
 	envSecret           string
 	logDir              string
+
+	// rl carries optional dashboard subsystem deps; nil-safe in handlers.
+	rl RateLimitDeps
 }
 
 // NewHandler creates a new management handler instance.

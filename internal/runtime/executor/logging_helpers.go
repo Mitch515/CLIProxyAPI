@@ -98,6 +98,15 @@ func recordAPIRequest(ctx context.Context, cfg *config.Config, info upstreamRequ
 
 // recordAPIResponseMetadata captures upstream response status/header information for the latest attempt.
 func recordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
+	// Always attempt to publish rate-limit observations from headers, even
+	// when request-logging is disabled — the dashboard subsystem subscribes
+	// to these and is independent of cfg.RequestLog. The publisher resolves
+	// the provider from the auth stashed in ctx, so passing "" here is safe;
+	// callers that know the provider should call publishRateLimitFromHeaders
+	// directly with non-2xx response bodies for richer parsing.
+	if auth, ok := SelectedAuthFromContext(ctx); ok && auth != nil {
+		publishRateLimitFromHeaders(ctx, status, auth.Provider, headers, nil)
+	}
 	if cfg == nil || !cfg.RequestLog {
 		return
 	}

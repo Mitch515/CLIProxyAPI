@@ -13,6 +13,10 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
+	rlservice "github.com/router-for-me/CLIProxyAPI/v6/internal/ratelimit/service"
+	rlstore "github.com/router-for-me/CLIProxyAPI/v6/internal/ratelimit/store"
+	rlwarmup "github.com/router-for-me/CLIProxyAPI/v6/internal/ratelimit/warmup"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -89,6 +93,11 @@ type Service struct {
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
+
+	// rate-limit / dashboard subsystem (nil when disabled)
+	rlStore     *rlstore.Store
+	rlService   *rlservice.Service
+	rlScheduler *rlwarmup.Scheduler
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -505,6 +514,22 @@ func (s *Service) Run(ctx context.Context) error {
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
 
+	// Wire dashboard subsystem deps into the management handler and start
+	// the background workers. Both are no-ops when the subsystem is disabled.
+	if s.rlStore != nil {
+		s.server.SetRateLimitDeps(managementHandlers.RateLimitDeps{
+			Store:     s.rlStore,
+			Service:   s.rlService,
+			Scheduler: s.rlScheduler,
+		})
+	}
+	if s.rlService != nil {
+		s.rlService.Start(ctx)
+	}
+	if s.rlScheduler != nil {
+		s.rlScheduler.Start(ctx)
+	}
+
 	if s.authManager == nil {
 		s.authManager = newDefaultAuthManager()
 	}
@@ -701,6 +726,21 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			defer cancel()
 			if err := s.server.Stop(shutdownCtx); err != nil {
 				log.Errorf("error stopping API server: %v", err)
+				if shutdownErr == nil {
+					shutdownErr = err
+				}
+			}
+		}
+
+		if s.rlScheduler != nil {
+			s.rlScheduler.Stop()
+		}
+		if s.rlService != nil {
+			s.rlService.Stop()
+		}
+		if s.rlStore != nil {
+			if err := s.rlStore.Close(); err != nil {
+				log.Errorf("failed to close ratelimit store: %v", err)
 				if shutdownErr == nil {
 					shutdownErr = err
 				}

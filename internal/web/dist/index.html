@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>CLIProxyAPI Dashboard (placeholder)</title>
+    <style>
+      body { font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+             color: #f1f1f3; background: #0a0a0a; padding: 4rem; max-width: 720px; margin: auto; }
+      code { background: #17171c; padding: 0.15em 0.4em; border-radius: 4px; font: 13px ui-monospace, Menlo, monospace; }
+      pre  { background: #17171c; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+      h1   { color: #7c5cff; }
+      a    { color: #8d70ff; }
+    </style>
+  </head>
+  <body>
+    <h1>Dashboard not built</h1>
+    <p>This binary was built without the SvelteKit dashboard bundle. To produce a
+       working dashboard, run the build script then rebuild the Go binary:</p>
+    <pre><code>./scripts/build-web.sh    # or .\scripts\build-web.ps1 on Windows
+go build ./cmd/server</code></pre>
+    <p>This file is a committed placeholder so that
+       <code>//go:embed all:dist</code> resolves on a fresh checkout — the
+       build script overwrites it with the real bundle.</p>
+  </body>
+</html>

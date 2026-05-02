@@ -299,6 +299,17 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
+	// Rate-limit window awareness: when the dashboard subsystem has reported
+	// that a 5h or 7d window is fully consumed and not yet reset, skip this
+	// auth so the selector picks another. The window data is populated from
+	// upstream headers/429 bodies by internal/ratelimit; if unset (zero
+	// values) this branch is a no-op and selection proceeds as before.
+	if auth.Quota.Window5hPct >= 1 && !auth.Quota.Window5hResetAt.IsZero() && auth.Quota.Window5hResetAt.After(now) {
+		return true, blockReasonCooldown, auth.Quota.Window5hResetAt
+	}
+	if auth.Quota.Window7dPct >= 1 && !auth.Quota.Window7dResetAt.IsZero() && auth.Quota.Window7dResetAt.After(now) {
+		return true, blockReasonCooldown, auth.Quota.Window7dResetAt
+	}
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
 			state, ok := auth.ModelStates[model]

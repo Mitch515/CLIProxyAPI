@@ -1,4 +1,4 @@
-# CLI Proxy API
+# CLI Proxy API — Mitch515 fork
 
 English | [中文](README_CN.md)
 
@@ -7,6 +7,65 @@ A proxy server that provides OpenAI/Gemini/Claude/Codex compatible API interface
 It now also supports OpenAI Codex (GPT models) and Claude Code via OAuth.
 
 So you can use local or multi-account CLI access with OpenAI(include Responses)/Gemini/Claude-compatible clients and SDKs.
+
+## Fork additions: dashboard + per-account rate-limit tracking
+
+This fork adds three things on top of upstream `router-for-me/CLIProxyAPI`:
+
+1. **Per-account 5h / 7d window tracking** — every upstream response is parsed for
+   rate-limit headers (Anthropic `anthropic-ratelimit-unified-*`) and 429 bodies
+   (Codex usage cap message, Gemini `QuotaFailure`). Each observation is
+   persisted to a SQLite file under `auth-dir/cliproxy-state.db` and mirrored
+   onto the in-memory `Auth.Quota` so the selector skips windows-exhausted
+   accounts automatically.
+2. **Auto-warmup scheduler** — the moment a previously exhausted window
+   resets, a one-token ping (Haiku for Claude, gpt-5-nano for Codex,
+   gemini-2.5-flash-lite for Gemini, …) fires through the proxy's own
+   execution path so the next window starts at the earliest possible second.
+3. **Embedded SvelteKit dashboard** at `/dashboard` — dark mode, violet
+   accent, color-ramping progress rings (green→amber→red), live countdowns
+   to reset, manual "ping now" button, server-sent events for live updates.
+   No separate process; everything ships in the single Go binary via `go:embed`.
+
+### Building the dashboard
+
+```bash
+./scripts/build-web.sh        # bash
+.\scripts\build-web.ps1       # PowerShell
+go build ./cmd/server         # rebuilds the binary with the embedded SPA
+```
+
+If you skip the dashboard build the binary still runs; the `/dashboard` route
+serves a placeholder page explaining how to build it.
+
+### New management endpoints
+
+| Method + path | Purpose |
+|---|---|
+| `GET /v0/management/accounts` | All connected subscriptions with windows.5h / windows.7d state |
+| `GET /v0/management/accounts/:id` | One account with `last_warmup` |
+| `GET /v0/management/accounts/:id/history?window=5h\|7d` | Time series for charts |
+| `PATCH /v0/management/accounts/:id` | Set label / toggle warmup / override warmup model |
+| `POST /v0/management/accounts/:id/warmup` | Manual fire of one warmup ping |
+| `POST /v0/management/sse-ticket` | Mint short-lived (60s) ticket for SSE auth |
+| `GET /v0/management/events?ticket=…` | Server-sent events: `account.changed`, `warmup.fired` |
+
+All are protected by the existing `Bearer` / `X-Management-Key` middleware,
+except the SSE GET which authenticates via the ticket query parameter
+(EventSource cannot send custom headers).
+
+### Configuration
+
+Add to `config.yaml` (all keys optional, defaults shown):
+
+```yaml
+rate-limit:
+  enabled: true
+  warmup-enabled: true
+  poll-interval-seconds: 30
+  history-days: 14
+  warmup-models: {}    # per-provider override of the cheapest model
+```
 
 ## Sponsor
 

@@ -615,6 +615,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
+		// Stash the selected auth so the executor logging helper can publish
+		// rate-limit observations (parsed from upstream headers/429 bodies)
+		// to the dashboard subsystem with the right account attribution.
+		execCtx = context.WithValue(execCtx, "cliproxy.selected_auth", auth)
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
@@ -671,6 +675,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
+		// Stash the selected auth so the executor logging helper can publish
+		// rate-limit observations (parsed from upstream headers/429 bodies)
+		// to the dashboard subsystem with the right account attribution.
+		execCtx = context.WithValue(execCtx, "cliproxy.selected_auth", auth)
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
@@ -727,6 +735,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
+		// Stash the selected auth so the executor logging helper can publish
+		// rate-limit observations (parsed from upstream headers/429 bodies)
+		// to the dashboard subsystem with the right account attribution.
+		execCtx = context.WithValue(execCtx, "cliproxy.selected_auth", auth)
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
